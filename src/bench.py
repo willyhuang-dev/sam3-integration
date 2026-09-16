@@ -141,9 +141,12 @@ def main(argv=None):
     p.add_argument("--engine-dir", default="out/engines")
     p.add_argument("--log-dir", default="logs")
     p.add_argument("--out", default="results.jsonl")
-    p.add_argument("--keep-engines", action="store_true",
-                   help="engines are ~0.5-1 GB each and the matrix has dozens; "
-                        "deleted after benchmarking unless this is set")
+    p.add_argument("--delete-engines", action="store_true",
+                   help="engines are ~0.5-1 GB each and the matrix has dozens, "
+                        "but they are KEPT by default: the detection check and "
+                        "the layer profile both need a real engine, and "
+                        "rebuilding one costs ~5 minutes. Disk is the cheap "
+                        "resource here, build time is not.")
     args = p.parse_args(argv)
 
     os.makedirs(args.engine_dir, exist_ok=True)
@@ -177,7 +180,7 @@ def main(argv=None):
             else:
                 print("    BENCH FAILED (likely OOM) -- row kept with the error",
                       flush=True)
-            if not args.keep_engines:
+            if args.delete_engines:
                 os.remove(engine)
 
         with open(args.out, "a") as fh:
