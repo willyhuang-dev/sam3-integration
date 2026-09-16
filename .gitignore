@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Artefacts: rebuilt from source, far too big for git.
+# ONNX ~1.9 GB each, engines ~0.5-1 GB each, and the matrix has 25 of them.
+*.onnx
+*.onnx_data
+*.engine
+*.npy
+out/
+ckpts/
+logs/

@@ -1,0 +1,212 @@
+{
+  "white plastic bag": {
+    "file": "white_plastic_bag.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 5,
+    "norm_mean": 15.2833
+  },
+  "orange juice bottle": {
+    "file": "orange_juice_bottle.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 5,
+    "norm_mean": 16.0567
+  },
+  "jar": {
+    "file": "jar.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 3,
+    "norm_mean": 9.5126
+  },
+  "cup": {
+    "file": "cup.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 3,
+    "norm_mean": 9.9288
+  },
+  "helmet": {
+    "file": "helmet.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 3,
+    "norm_mean": 11.8716
+  },
+  "glove": {
+    "file": "glove.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 3,
+    "norm_mean": 10.0002
+  },
+  "cardboard box": {
+    "file": "cardboard_box.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 4,
+    "norm_mean": 12.5542
+  },
+  "red tape dispenser": {
+    "file": "red_tape_dispenser.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 5,
+    "norm_mean": 16.0079
+  },
+  "person": {
+    "file": "person.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 3,
+    "norm_mean": 7.4054
+  },
+  "chair": {
+    "file": "chair.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 3,
+    "norm_mean": 9.8172
+  },
+  "plastic bag": {
+    "file": "plastic_bag.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 4,
+    "norm_mean": 13.2787
+  },
+  "bottle": {
+    "file": "bottle.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 3,
+    "norm_mean": 9.7544
+  },
+  "white paper": {
+    "file": "white_paper.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 4,
+    "norm_mean": 11.7661
+  },
+  "bubble wrap": {
+    "file": "bubble_wrap.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 4,
+    "norm_mean": 12.734
+  },
+  "green scrubber": {
+    "file": "green_scrubber.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 5,
+    "norm_mean": 13.2503
+  },
+  "green ball": {
+    "file": "green_ball.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 4,
+    "norm_mean": 10.6768
+  },
+  "hand": {
+    "file": "hand.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 3,
+    "norm_mean": 8.0202
+  },
+  "human hand": {
+    "file": "human_hand.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 4,
+    "norm_mean": 11.1862
+  },
+  "person's hand": {
+    "file": "person_s_hand.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 5,
+    "norm_mean": 11.3682
+  },
+  "bare hand": {
+    "file": "bare_hand.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 4,
+    "norm_mean": 10.0511
+  },
+  "red tape": {
+    "file": "red_tape.npz",
+    "shape": [
+      1,
+      32,
+      256
+    ],
+    "valid_tokens": 4,
+    "norm_mean": 11.3298
+  }
+}
