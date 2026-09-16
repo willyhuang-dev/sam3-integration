@@ -194,6 +194,34 @@ def main():
                  f"{cell(b_, 'engine_mib', '{:.0f}')} |")
     L.append("")
 
+    # detection-only ablation, if it has been run
+    if os.path.exists("results_nomask.jsonl"):
+        nm = load("results_nomask.jsonl")
+        L.append("## 拿掉 pred_masks（純偵測部署）")
+        L.append("")
+        L.append("`--no-masks` 讓 ONNX 匯出器剪掉整個 mask decoder，`merge.py` 連帶移除"
+                 "只有它在用的 `fpn_feat_0/1`。所以這一欄同時包含 mask decoder 與"
+                 "那兩層高解析 FPN —— 是「純偵測部署」的數字，不是單獨的 mask decoder 成本。")
+        L.append("")
+        L.append("| N | bs | 含 mask (ms) | 純偵測 (ms) | 加速 | 含 mask VRAM | "
+                 "純偵測 VRAM | 省下 |")
+        L.append("|---|---|---|---|---|---|---|---|")
+        for (tag, res, bs), r in sorted(nm.items(), key=lambda kv: (kv[0][2], kv[0][1])):
+            n = r["n_max"]
+            ftag = "int8_rect" if n == 10 else f"int8_rect_n{n}"
+            f = rows.get((ftag, res, bs))
+            fl = f["latency_ms"] if (f and f.get("ok")) else None
+            fv = f["vram_peak_proc_mib"] if (f and f.get("ok")) else None
+            if not r.get("ok"):
+                L.append(f"| {n} | {bs} | {fl or '—'} | **失敗** | — | — | — | — |")
+                continue
+            nl, nv = r["latency_ms"], r["vram_peak_proc_mib"]
+            L.append(f"| {n} | {bs} | {f'{fl:.1f}' if fl else '**OOM**'} | {nl:.1f} | "
+                     f"{f'{fl / nl:.2f}×' if fl else '—'} | "
+                     f"{fv if fv else '**OOM**'} | {nv} | "
+                     f"{f'{fv - nv} MiB' if fv else '—'} |")
+        L.append("")
+
     bad = [r for r in rows.values() if not r.get("ok")]
     L.append("## 沒跑成的格子")
     L.append("")
