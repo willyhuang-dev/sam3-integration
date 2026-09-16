@@ -136,6 +136,10 @@ def main(argv=None):
                         "goes into the result rows")
     p.add_argument("--n-max", type=int, default=10)
     p.add_argument("--rect-rows", type=int, default=None)
+    p.add_argument("--queries", type=int, default=200,
+                   help="mask-carrying queries per concept. 200 unless the graph "
+                        "was exported with --topk-masks K, in which case it is K "
+                        "-- otherwise the reported pred_masks size is 10x too big.")
     p.add_argument("--int8", action="store_true")
     p.add_argument("--iters", type=int, default=100)
     p.add_argument("--engine-dir", default="out/engines")
@@ -157,7 +161,8 @@ def main(argv=None):
         engine = os.path.join(args.engine_dir, f"{args.tag}_r{args.res}_b{bs}.engine")
         row = {"tag": args.tag, "res": args.res, "bs": bs, "n_max": args.n_max,
                "rect_rows": args.rect_rows, "int8": args.int8, "mask": mask,
-               "mask_bytes": bs * args.n_max * 200 * mask * mask * 4,
+               "queries": args.queries,
+               "mask_bytes": bs * args.n_max * args.queries * mask * mask * 4,
                "ts": time.strftime("%F %T")}
         print(f"=== {args.tag} res={args.res} bs={bs} "
               f"(pred_masks {row['mask_bytes'] / 2**30:.2f} GiB) ===", flush=True)

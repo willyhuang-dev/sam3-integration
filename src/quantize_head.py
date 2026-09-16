@@ -113,6 +113,13 @@ def main(argv=None):
                         "activations are [10,200,288,288] = 663 MB each and "
                         "ModelOpt retains hundreds of them as graph outputs. "
                         "Measured: direct N=10 calibration was OOM-killed.")
+    p.add_argument("--only-mask-decoder", action="store_true",
+                   help="quantize ONLY the mask decoder, leaving DETR in fp16. "
+                        "Measured reason: DETR INT8 buys 0 speed (its BMMs are "
+                        "memory-bound) but costs 0.11 box IoU, while the mask "
+                        "decoder is conv-heavy -- convs are exactly where the "
+                        "VE's INT8 gain came from. Quantizing both together "
+                        "confounds the two; this separates them.")
     p.add_argument("--no-mha", action="store_true",
                    help="ablation: leave the 6 DETR attention BMMs in fp16. The "
                         "quantization experiment measured that quantizing them "
@@ -160,7 +167,13 @@ def main(argv=None):
 
     # ANCHORED AT THE START -- the same re.match trap the VE recipe hit.
     # "/mask_decoder/.*" matches nothing here; the names start "/model/".
-    exclude = [".*mask_decoder.*"] if args.exclude_mask_decoder else []
+    if args.only_mask_decoder:
+        # everything that is NOT the mask decoder
+        exclude = [".*detr_.*", ".*dot_product.*", ".*box_head.*"]
+    elif args.exclude_mask_decoder:
+        exclude = [".*mask_decoder.*"]
+    else:
+        exclude = []
     print(f"[quant] int8 W8A8 on the head, disable_mha_qdq={args.no_mha}, "
           f"exclude={exclude}", flush=True)
     t0 = time.time()
@@ -179,6 +192,44 @@ def main(argv=None):
           f"{len(md)}", flush=True)
     if not qn:
         raise SystemExit("FAIL: nothing was quantized")
+    if args.only_mask_decoder:
+        # Judging by NAME is too crude: quantizing a block legitimately puts
+        # Q/DQ on the tensors ENTERING it, and those are produced outside it
+        # (the DETR encoder's final output, the top-K gather, the text tile).
+        # The claim worth enforcing is about the CONSUMER: every quantizer must
+        # feed the mask decoder, i.e. no DETR compute is being quantized.
+        consumers = {}
+        for node in m.graph.node:
+            for inp in node.input:
+                consumers.setdefault(inp, []).append(node.name)
+        stray = []
+        for qz in qn:
+            if "mask_decoder" in qz.name:
+                continue
+            # QuantizeLinear -> DequantizeLinear -> real consumer
+            reached, frontier, seen = [], list(qz.output), set()
+            while frontier:
+                t = frontier.pop()
+                for cn in consumers.get(t, []):
+                    if cn in seen:
+                        continue
+                    seen.add(cn)
+                    if "DequantizeLinear" in cn or "QuantizeLinear" in cn:
+                        node = next(x for x in m.graph.node if x.name == cn)
+                        frontier.extend(node.output)
+                    else:
+                        reached.append(cn)
+            if reached and not all("mask_decoder" in c for c in reached):
+                stray.append((qz.name, [c for c in reached
+                                        if "mask_decoder" not in c][:2]))
+        if stray:
+            raise SystemExit(
+                f"FAIL: {len(stray)} quantizers feed something that is NOT the "
+                f"mask decoder, so this is not a mask-decoder-only run. "
+                f"e.g. {stray[:2]}")
+        print(f"    (of the {len(qn) - len(md)} quantizers named outside the "
+              f"mask decoder, all feed into it -- input-boundary Q/DQ)",
+              flush=True)
     if args.exclude_mask_decoder and md:
         raise SystemExit(
             f"FAIL: {len(md)} Q/DQ landed in the mask decoder despite the "

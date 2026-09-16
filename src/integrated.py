@@ -141,10 +141,21 @@ class MultiConceptHead(nn.Module):
     garbage, and no test that only checks shapes would notice.
     """
 
-    def __init__(self, model, n_max, return_masks=True):
+    def __init__(self, model, n_max, return_masks=True, topk_masks=None):
         super().__init__()
         self.model = model
         self.n_max = n_max
+        # Decode masks for only the top-K scoring queries instead of all 200.
+        # This is close to free: thresholding + NMS discard all but a handful
+        # anyway, so any K comfortably above the number of objects you expect
+        # changes nothing about the output -- it only stops computing masks that
+        # were going to be thrown away. It is also what makes pred_masks stop
+        # dominating VRAM (663 MB -> 66 MB per batch element at K=20, res 1008).
+        #
+        # Ranking by pred_logits is equivalent to ranking by the deployed score
+        # sigmoid(logits) * sigmoid(presence): presence is one scalar per
+        # (image, concept), so it cannot reorder queries WITHIN a concept.
+        self.topk_masks = topk_masks
         # Dropping pred_masks is not just an output change: the ONNX exporter
         # prunes ops that no output depends on, so the whole mask decoder
         # leaves the graph. That makes it the clean way to price the mask
@@ -154,6 +165,9 @@ class MultiConceptHead(nn.Module):
 
     def forward(self, fpn_feat_0, fpn_feat_1, fpn_feat_2, fpn_pos_2,
                 text_features, text_mask):
+        if self.topk_masks:
+            return self._forward_topk(fpn_feat_0, fpn_feat_1, fpn_feat_2,
+                                      fpn_pos_2, text_features, text_mask)
         from .modeling_sam3_sparse import Sam3VisionEncoderOutput
 
         n = self.n_max
@@ -190,6 +204,68 @@ class MultiConceptHead(nn.Module):
         return boxes, logits, presence, masks
 
 
+    def _forward_topk(self, fpn_feat_0, fpn_feat_1, fpn_feat_2, fpn_pos_2,
+                      text_features, text_mask):
+        """Sam3Model.forward, reimplemented so a top-K gather can sit between
+        the DETR decoder and the mask decoder.
+
+        Calling `self.model(...)` cannot do this -- the mask decoder is invoked
+        inside that forward with all 200 queries. Everything here mirrors it
+        step for step; `test_topk_full_equals_dense` pins that by demanding
+        K=200 reproduce the full path exactly (up to the score ordering).
+        """
+        from .modeling_sam3_sparse import box_cxcywh_to_xyxy, inverse_sigmoid
+
+        m = self.model
+        n, k = self.n_max, self.topk_masks
+        batch = fpn_feat_2.shape[0]
+
+        f0 = fpn_feat_0.repeat_interleave(n, dim=0)
+        f1 = fpn_feat_1.repeat_interleave(n, dim=0)
+        f2 = fpn_feat_2.repeat_interleave(n, dim=0)
+        p2 = fpn_pos_2.repeat_interleave(n, dim=0)
+        tf = text_features.repeat(batch, 1, 1)
+        tm = text_mask.repeat(batch, 1).bool()
+
+        enc = m.detr_encoder(vision_features=[f2], text_features=tf,
+                             vision_pos_embeds=[p2], text_mask=tm,
+                             vision_key_invalid=None, roi=None)
+        dec = m.detr_decoder(
+            vision_features=enc.last_hidden_state, text_features=enc.text_features,
+            vision_pos_encoding=enc.pos_embeds_flattened, text_mask=tm,
+            spatial_shapes=enc.spatial_shapes, vision_key_invalid=None)
+
+        offs = m.detr_decoder.box_head(dec.intermediate_hidden_states)
+        boxes_all = box_cxcywh_to_xyxy(
+            (inverse_sigmoid(dec.reference_boxes) + offs).sigmoid())
+        logits_all = m.dot_product_scoring(
+            decoder_hidden_states=dec.intermediate_hidden_states,
+            text_features=enc.text_features, text_mask=tm).squeeze(-1)
+
+        pred_logits = logits_all[-1]                     # [B*N, 200]
+        pred_boxes = boxes_all[-1]                       # [B*N, 200, 4]
+        hidden = dec.intermediate_hidden_states[-1]      # [B*N, 200, C]
+        presence = dec.presence_logits[-1]
+
+        idx = pred_logits.topk(k, dim=-1).indices        # [B*N, K]
+        gathered = hidden.gather(1, idx[..., None].expand(-1, -1, hidden.shape[-1]))
+        # Boxes and logits are reordered to MATCH the masks, so mask j always
+        # belongs to box j. Returning all 200 boxes next to K masks would leave
+        # the caller to redo the argsort and get it wrong.
+        pred_boxes = pred_boxes.gather(1, idx[..., None].expand(-1, -1, 4))
+        pred_logits = pred_logits.gather(1, idx)
+
+        mo = m.mask_decoder(
+            decoder_queries=gathered, backbone_features=[f0, f1, f2],
+            encoder_hidden_states=enc.last_hidden_state,
+            prompt_features=tf, prompt_mask=tm)
+
+        return (pred_boxes.reshape(-1, n, k, 4),
+                pred_logits.reshape(-1, n, k),
+                presence.reshape(-1, n),
+                mo.pred_masks.reshape(-1, n, k, *mo.pred_masks.shape[-2:]))
+
+
 class IntegratedSam3(nn.Module):
     """VE + head in one module -- the reference the split must reproduce.
 
@@ -198,10 +274,12 @@ class IntegratedSam3(nn.Module):
     that is what the INT8 calibration needs.
     """
 
-    def __init__(self, model, n_max, rect_rows=None, return_masks=True):
+    def __init__(self, model, n_max, rect_rows=None, return_masks=True,
+                 topk_masks=None):
         super().__init__()
         self.ve = IntegratedVE(model, rect_rows=rect_rows)
-        self.head = MultiConceptHead(model, n_max, return_masks=return_masks)
+        self.head = MultiConceptHead(model, n_max, return_masks=return_masks,
+                                     topk_masks=topk_masks)
 
     def forward(self, images, text_features, text_mask):
         f0, f1, f2, p2 = self.ve(images)

@@ -219,3 +219,58 @@ def test_output_shapes(model, text):
     assert presence.shape == (2, N_MAX)
     assert masks.shape == (2, N_MAX, 200, m, m)
     assert g == 46
+
+
+def test_topk_full_equals_dense(model, text):
+    """K=200 must reproduce the full path exactly, only reordered by score.
+
+    `_forward_topk` reimplements Sam3Model.forward so a gather can sit between
+    the DETR decoder and the mask decoder. A reimplementation that drifted from
+    the original would still produce plausible boxes and masks, so the gate is
+    that at K = all queries it is the SAME computation: gather by the score
+    order, and every tensor must match element for element.
+    """
+    tf, tm = text
+    ve = IntegratedVE(model, rect_rows=None).eval()
+    full = MultiConceptHead(model, n_max=2).eval()
+    topk = MultiConceptHead(model, n_max=2, topk_masks=200).eval()
+    img = _img()
+    with torch.inference_mode():
+        f = ve(img)
+        b0, l0, p0, m0 = full(*f, tf[:2], tm[:2])
+        b1, l1, p1, m1 = topk(*f, tf[:2], tm[:2])
+
+    assert torch.equal(p0, p1), "presence must be untouched by the top-K path"
+    for bi in range(b0.shape[0]):
+        for ni in range(2):
+            order = torch.argsort(l0[bi, ni], descending=True)
+            assert torch.allclose(l0[bi, ni][order], l1[bi, ni], atol=1e-4)
+            assert torch.allclose(b0[bi, ni][order], b1[bi, ni], atol=1e-4)
+            assert torch.allclose(m0[bi, ni][order], m1[bi, ni], atol=2e-3), \
+                "masks must match the full path once put in the same order"
+
+
+def test_topk_keeps_the_highest_scoring_masks(model, text):
+    """K < 200 must keep exactly the top-K, and pair each mask with its own box.
+
+    The negative control for a gather that returns the right SHAPE but the
+    wrong ROWS: boxes, logits and masks are gathered with the same indices, so
+    a mismatch between them shows up as mask j not belonging to box j.
+    """
+    tf, tm = text
+    ve = IntegratedVE(model, rect_rows=None).eval()
+    full = MultiConceptHead(model, n_max=1).eval()
+    topk = MultiConceptHead(model, n_max=1, topk_masks=8).eval()
+    img = _img()
+    with torch.inference_mode():
+        f = ve(img)
+        b0, l0, _, m0 = full(*f, tf[:1], tm[:1])
+        b1, l1, _, m1 = topk(*f, tf[:1], tm[:1])
+
+    assert m1.shape[2] == 8 and b1.shape[2] == 8
+    order = torch.argsort(l0[0, 0], descending=True)[:8]
+    assert torch.allclose(l0[0, 0][order], l1[0, 0], atol=1e-4)
+    for j in range(8):
+        assert torch.allclose(b0[0, 0][order[j]], b1[0, 0, j], atol=1e-4), \
+            f"box {j} is not the one belonging to mask {j}"
+        assert torch.allclose(m0[0, 0][order[j]], m1[0, 0, j], atol=2e-3)

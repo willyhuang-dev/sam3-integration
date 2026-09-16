@@ -73,6 +73,12 @@ def parse_args(argv=None):
                         "with-masks engine IS the mask decoder's cost -- and it "
                         "is also the deployment option for detection-only use, "
                         "where pred_masks is what makes large batches OOM.")
+    p.add_argument("--topk-masks", type=int, default=None,
+                   help="decode masks only for the top-K scoring queries "
+                        "instead of all 200. Near-lossless (thresholding keeps "
+                        "a handful anyway) and it is what stops pred_masks from "
+                        "dominating VRAM: 663 MB -> 66 MB per batch element at "
+                        "K=20, res 1008.")
     p.add_argument("--head-only", action="store_true",
                    help="export only head.onnx. The VE graph does NOT depend on "
                         "--n-max -- concept slots live entirely in the head -- so "
@@ -102,7 +108,8 @@ def main(argv=None):
     model = load_model(args.model_id, args.size).to(args.device)
     ve = IntegratedVE(model, rect_rows=rect).eval()
     head = MultiConceptHead(model, n_max=args.n_max,
-                            return_masks=not args.no_masks).eval()
+                            return_masks=not args.no_masks,
+                            topk_masks=args.topk_masks).eval()
 
     img = torch.zeros(1, 3, args.size, args.size, device=args.device)
     # Real-ish values rather than zeros: the traced graph cannot depend on them,
@@ -159,7 +166,8 @@ def main(argv=None):
         import json
         json.dump({"size": args.size, "grid": grid, "n_max": args.n_max,
                    "rect_rows": rect, "mask": None if args.no_masks else mask,
-                   "masks": not args.no_masks, "aspect": args.aspect,
+                   "masks": not args.no_masks, "topk_masks": args.topk_masks,
+                   "aspect": args.aspect,
                    "opset": args.opset}, fh, indent=2)
     print(f"[done] {meta}", flush=True)
     return 0
