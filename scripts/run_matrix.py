@@ -194,7 +194,7 @@ def done_rows():
     return seen
 
 
-def stage_bench(res_list):
+def stage_bench(res_list, print_plan=False):
     seen = done_rows()
     rect_of = {res: json.load(open(os.path.join(d_pruned(res), "meta.json")))["rect_rows"]
                for res in res_list}
@@ -227,6 +227,23 @@ def stage_bench(res_list):
         plan.append(("int8_dense", f"int8_dense_{res}.onnx", res, [1], True,
                      None, N_DEFAULT))
 
+    if print_plan:
+        # One JSON object per REMAINING engine, for the host-side driver.
+        # It has to run outside the container because the fix for the
+        # nvidia-driver host-RAM leak is restarting the container, which a
+        # process inside it cannot do to itself.
+        for tag, onnx_name, res, batches, int8, rect, n_max in plan:
+            onnx_path = os.path.join(OUT, onnx_name)
+            if not os.path.exists(onnx_path):
+                continue
+            for b in batches:
+                if (tag, res, b) in seen:
+                    continue
+                print(json.dumps({"tag": tag, "onnx": onnx_path, "res": res,
+                                  "bs": b, "int8": int8, "rect": rect,
+                                  "n_max": n_max}))
+        return
+
     for tag, onnx_name, res, batches, int8, rect, n_max in plan:
         onnx_path = os.path.join(OUT, onnx_name)
         todo = [b for b in batches if (tag, res, b) not in seen]
@@ -252,7 +269,8 @@ def main():
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--stage", default="all",
-                   choices=["all", "export", "quantize", "merge", "nsweep", "bench"])
+                   choices=["all", "export", "quantize", "merge", "nsweep",
+                            "bench", "plan"])
     p.add_argument("--res", type=int, nargs="+", default=RES)
     args = p.parse_args()
     os.makedirs(LOGS, exist_ok=True)
@@ -267,6 +285,9 @@ def main():
         stage_merge(order)
     if args.stage in ("all", "nsweep"):
         stage_nsweep_prep(order)
+    if args.stage == "plan":
+        stage_bench(order, print_plan=True)
+        return
     if args.stage in ("all", "bench"):
         stage_bench(order)
     print("=== run_matrix done ===", flush=True)
