@@ -35,11 +35,12 @@ import onnx
 
 
 def _check_structure(base_g, q_g, qdq):
-    """Refuse a transplant that cannot land.
+    """Refuse a transplant that cannot land; return the base nodes + weights to carry.
 
     Three claims, each catching a different way this goes quietly wrong:
       1. the two graphs have the same node count (different topology entirely)
-      2. every tensor a Q/DQ node reads is produced somewhere in the base
+      2. every tensor a Q/DQ node reads either exists in the base or is an
+         initializer the quantizer added and we can carry over
       3. the rewiring found consumers (checked by the caller against 0)
     """
     b_nodes = len(base_g.node)
@@ -53,13 +54,26 @@ def _check_structure(base_g, q_g, qdq):
 
     produced = {o for n in base_g.node for o in n.output}
     produced |= {i.name for i in base_g.input} | {i.name for i in base_g.initializer}
+    q_init = {i.name for i in q_g.initializer}
     missing = [n.input[0] for n in qdq
                if n.op_type == "QuantizeLinear" and n.input[0] not in produced]
-    if missing:
+    # ModelOpt sometimes DUPLICATES a shared weight so each consumer can carry
+    # its own scale (names get a "_<k>" suffix). Those duplicates exist only in
+    # the quantized graph, so they show up as "missing" -- but they are weights,
+    # which are resolution-independent, so carrying them across is correct. What
+    # is NOT acceptable is a missing tensor that the quantized graph does not
+    # define either: that means the graphs really are different.
+    carry = [m for m in missing if m in q_init]
+    hard = [m for m in missing if m not in q_init]
+    if hard:
         raise SystemExit(
-            f"FAIL: {len(missing)} tensors the Q/DQ nodes quantize do not exist "
-            f"in the base graph, e.g. {missing[:3]}")
-    return b_nodes
+            f"FAIL: {len(hard)} tensors the Q/DQ nodes quantize exist in NEITHER "
+            f"graph as initializers, e.g. {hard[:3]} -- these are not the same "
+            f"graph at two resolutions.")
+    if carry:
+        print(f"[transplant] carrying {len(carry)} duplicated weight initializers "
+              f"created by the quantizer (e.g. {carry[:2]})", flush=True)
+    return b_nodes, carry
 
 
 def main(argv=None):
@@ -75,7 +89,7 @@ def main(argv=None):
 
     qdq = [n for n in qg.node
            if n.op_type in ("QuantizeLinear", "DequantizeLinear")]
-    n_base = _check_structure(bg, qg, qdq)
+    n_base, carry = _check_structure(bg, qg, qdq)
     print(f"[transplant] base {n_base} nodes, {len(qdq)} Q/DQ to move", flush=True)
 
     q_init = {i.name: i for i in qg.initializer}
@@ -87,6 +101,7 @@ def main(argv=None):
 
     b_init = {i.name for i in bg.initializer}
     need = {inp for n in qdq for inp in n.input[1:] if inp in q_init}
+    need |= set(carry)   # the duplicated weights themselves, not just their scales
     for nm in sorted(need):
         if nm not in b_init:
             bg.initializer.append(q_init[nm])

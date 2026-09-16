@@ -44,24 +44,34 @@ os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 NECK_PATTERN = ".*/neck/.*"
 
 
-def build_calibration(files, size, limit):
-    """Letterboxed, SAM3-normalised frames -- the SAME shape the engine sees.
+def build_calibration(files, size, limit, squash=False):
+    """SAM3-normalised calibration frames, letterboxed by default.
 
-    Calibrating on squashed images would set activation ranges for a token
-    distribution the deployed model never produces: with strategy C every ViT
-    layer sees content-only tokens, and the patch embedding sees a black bar
-    that squashing would not have.
+    Letterbox is the deployed distribution, which is the principled choice: with
+    strategy C every ViT layer sees content-only tokens and the patch embedding
+    sees a black bar that squashing would not have.
+
+    `squash` exists because the principle lost to a measurement. The deployed
+    (letterbox-calibrated) VE scores cos 0.8515 against fp16, while the
+    quantization experiment published 0.869 for the same recipe with
+    squash-resized calibration -- so the calibration distribution is a real
+    variable here and the two are worth comparing rather than assumed.
     """
     import cv2
 
-    from .preprocess import prepare
+    from .preprocess import prepare, to_tensor
 
     out = []
     for f in files[:limit]:
         bgr = cv2.imread(f)
         if bgr is None:
             continue
-        x, _ = prepare(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), size)
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        if squash:
+            x = to_tensor(cv2.resize(rgb, (size, size),
+                                     interpolation=cv2.INTER_LINEAR))
+        else:
+            x, _ = prepare(rgb, size)
         out.append(x.astype(np.float32))
     if not out:
         raise SystemExit("no calibration images could be read")
@@ -100,14 +110,23 @@ def main(argv=None):
     p.add_argument("--images", default="/root/willy/models/pretrained_weights/"
                                         "sam3_huggingface/images")
     p.add_argument("--n-calib", type=int, default=8)
+    p.add_argument("--squash-calib", action="store_true",
+                   help="calibrate on plain square-resized frames instead of "
+                        "letterboxed ones. Deployment letterboxes, so this is "
+                        "the WRONG distribution on principle -- it is here "
+                        "because the measured VE cosine (0.8515) came out below "
+                        "the quantization experiment's 0.869, and its calibration "
+                        "was squash-resized. Principle loses to measurement.")
     p.add_argument("--full-int8", action="store_true",
                    help="ablation: quantize the neck too (measured WORSE mAP at "
                         "identical speed -- kept so the claim stays falsifiable)")
     args = p.parse_args(argv)
 
     files = sorted(glob.glob(os.path.join(args.images, "**", "*.jpg"), recursive=True))
-    imgs = build_calibration(files, args.size, args.n_calib)
-    print(f"[calib] {len(imgs)} letterboxed frames at {imgs[0].shape}", flush=True)
+    imgs = build_calibration(files, args.size, args.n_calib, args.squash_calib)
+    print(f"[calib] {len(imgs)} "
+          f"{'squash-resized' if args.squash_calib else 'letterboxed'} frames at "
+          f"{imgs[0].shape}", flush=True)
 
     from onnxruntime.quantization import CalibrationDataReader
 

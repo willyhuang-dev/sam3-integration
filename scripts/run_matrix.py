@@ -180,6 +180,32 @@ def stage_nsweep_prep(res_list):
                    log=f"merge_n{n}_{res}.log")
 
 
+def stage_baseline_nsweep_prep(res_list):
+    """Baseline (fp16, no pruning) heads for N = 1..9, reusing the rect N-sweep heads.
+
+    The head does NOT depend on strategy C -- the pruning lives entirely in the
+    vision encoder -- so the head exported for the rect sweep at (res, N) is the
+    same graph the dense baseline needs. That turns 45 exports into 45 merges.
+    """
+    for res in res_list:
+        ve = os.path.join(d_dense(res), "ve.onnx")
+        if not os.path.exists(ve):
+            print(f"[base] dense VE for {res} missing, skip", flush=True)
+            continue
+        for n in N_SWEEP:
+            if n == N_DEFAULT:
+                continue          # fp16_dense at N=10 is already measured
+            head = os.path.join(d_nhead(res, n), "head.onnx")
+            if not os.path.exists(head):
+                print(f"[base] {head} missing, skip", flush=True)
+                continue
+            out = os.path.join(OUT, f"fp16_dense_{res}_n{n}.onnx")
+            if os.path.exists(out):
+                continue
+            sh([sys.executable, "-m", "src.merge", ve, head, out],
+               log=f"merge_base_n{n}_{res}.log")
+
+
 def done_rows():
     if not os.path.exists(RESULTS):
         return set()
@@ -224,6 +250,14 @@ def stage_bench(res_list, print_plan=False):
     # Reference for the headline speedup: stock precision, stock token count.
     plan += [("fp16_dense", f"fp16_dense_{res}.onnx", res, [1], False, None,
               N_DEFAULT) for res in res_list]
+    # The baseline the speedup table is quoted against, swept over N so the
+    # ratio is measured at every (res, N) rather than extrapolated from N=10.
+    for res in res_list:
+        for n in N_SWEEP:
+            if n == N_DEFAULT:
+                continue
+            plan.append((f"fp16_dense_n{n}", f"fp16_dense_{res}_n{n}.onnx", res,
+                         [1], False, None, n))
     # The two single-ingredient corners complete the 2x2. Only at the ends of
     # the resolution range: 644 is the structurally special one (its windowed
     # attention saves nothing, see README) and 1008 is the intended operating
@@ -277,7 +311,7 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--stage", default="all",
                    choices=["all", "export", "quantize", "merge", "nsweep",
-                            "bench", "plan"])
+                            "baseline", "bench", "plan"])
     p.add_argument("--res", type=int, nargs="+", default=RES)
     args = p.parse_args()
     os.makedirs(LOGS, exist_ok=True)
@@ -292,6 +326,8 @@ def main():
         stage_merge(order)
     if args.stage in ("all", "nsweep"):
         stage_nsweep_prep(order)
+    if args.stage in ("all", "baseline"):
+        stage_baseline_nsweep_prep(order)
     if args.stage == "plan":
         stage_bench(order, print_plan=True)
         return

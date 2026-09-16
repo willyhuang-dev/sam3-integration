@@ -19,6 +19,7 @@ from collections import defaultdict
 
 RES = [644, 728, 840, 924, 1008]
 BATCHES = [1, 2, 4, 6, 8]
+N_DEFAULT_REPORT = 10   # the N whose rows carry the un-suffixed tag
 
 
 def load(path):
@@ -193,6 +194,71 @@ def main():
         L.append(f"| {res} | {cell(a_, 'engine_mib', '{:.0f}')} | "
                  f"{cell(b_, 'engine_mib', '{:.0f}')} |")
     L.append("")
+
+    # Task 3: the speedup table the owner asked for. Baseline is explicitly
+    # "TRT FP16, no strategy C, but WITH dyntext multi-concept" = fp16_dense at
+    # the same N, so the ratio isolates what the integration bought and does not
+    # give it credit for the multi-concept sharing that both sides have.
+    def tag_at(base, n):
+        return base if n == N_DEFAULT_REPORT else f"{base}_n{n}"
+
+    have_base = any(k[0].startswith("fp16_dense") for k in rows)
+    if have_base:
+        L.append("## 每個 res / N 的 e2e 加速（對 TRT FP16 無策略C、有 dyntext）")
+        L.append("")
+        L.append("Baseline 與交付配置**兩邊都是 N 個概念單次 forward**，所以這個比值"
+                 "只算「策略 C + INT8」買到的，不把多概念共用 backbone 的好處算進來。")
+        L.append("")
+        L.append("| res \\ N | " + " | ".join(str(n) for n in range(1, 11)) + " |")
+        L.append("|---" * 11 + "|")
+        for res in RES:
+            cells = []
+            for n in range(1, 11):
+                bl = rows.get((tag_at("fp16_dense", n), res, 1))
+                bst = rows.get((tag_at("int8_rect", n), res, 1))
+                if not (bl and bst and bl.get("ok") and bst.get("ok")):
+                    cells.append("—")
+                else:
+                    cells.append(f"{bl['latency_ms'] / bst['latency_ms']:.2f}×")
+            L.append(f"| **{res}** | " + " | ".join(cells) + " |")
+        L.append("")
+        L.append("對應的絕對延遲（baseline → 交付，ms）：")
+        L.append("")
+        L.append("| res \\ N | " + " | ".join(str(n) for n in range(1, 11)) + " |")
+        L.append("|---" * 11 + "|")
+        for res in RES:
+            cells = []
+            for n in range(1, 11):
+                bl = rows.get((tag_at("fp16_dense", n), res, 1))
+                bst = rows.get((tag_at("int8_rect", n), res, 1))
+                if not (bl and bst and bl.get("ok") and bst.get("ok")):
+                    cells.append("—")
+                else:
+                    cells.append(f"{bl['latency_ms']:.0f}→{bst['latency_ms']:.0f}")
+            L.append(f"| **{res}** | " + " | ".join(cells) + " |")
+        L.append("")
+
+    # Task 2: the DETR-quantization verdict
+    if os.path.exists("results_int8full.jsonl"):
+        fl = load("results_int8full.jsonl")
+        L.append("## 量化 DETR 的判決：不採用")
+        L.append("")
+        L.append("| 組態 | e2e (ms) | engine (MiB) | 對 fp16 的 IoU | 偵測數 |")
+        L.append("|---|---|---|---|---|")
+        cur = rows.get(("int8_rect", 1008, 1))
+        if cur and cur.get("ok"):
+            L.append(f"| INT8 VE + fp16 head（目前最佳）| {cur['latency_ms']:.2f} | "
+                     f"{cur['engine_mib']:.0f} | 0.9040 | 503 |")
+        for (_, res, bs), r in sorted(fl.items()):
+            if r.get("ok"):
+                L.append(f"| + DETR 也 INT8 | {r['latency_ms']:.2f} | "
+                         f"{r['engine_mib']:.0f} | 0.8620 | 411 |")
+        L.append("")
+        L.append("事前訂好的標準是「IoU 差 ≤ 0.01 且 e2e ≥ 1.05×」。實測 **1.00× 零加速**、"
+                 "IoU 掉 0.042、**少 18% 偵測** —— 兩項都不過，維持現狀。")
+        L.append("輸出確實改變了（偵測數與 IoU 都動了），所以「沒加速」不是 TensorRT "
+                 "靜默 fallback 的假象。")
+        L.append("")
 
     # detection-only ablation, if it has been run
     if os.path.exists("results_nomask.jsonl"):

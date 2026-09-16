@@ -30,9 +30,34 @@ set -u
 # path is not optional.
 trap 'pkill -9 -x trtexec 2>/dev/null' EXIT INT TERM
 
+# SINGLETON. Three instances of this script once ran concurrently -- a relaunch
+# raced a "pkill -f 'bash scripts/drive.sh'" that matched its OWN ssh command
+# line and killed the shell issuing it instead of the targets. The result was
+# GPU contention, which does not fail loudly: it just inflates every latency.
+# One cell got measured twice, 3% apart, and three more failed outright. Those
+# rows had to be thrown away. A lock is cheaper than detecting that again.
+#   (To stop this script: pkill -f 'drive[.]sh' -- the brackets stop the
+#    pattern from matching the command that carries it.)
+LOCK=/tmp/sam3_drive.lock
+exec 9>"$LOCK"
+if ! flock -n 9; then
+    echo "[drive] another instance already holds $LOCK -- refusing to start."
+    echo "[drive] Two drivers would contend for the GPU and silently inflate"
+    echo "[drive] every latency in the table."
+    exit 1
+fi
+echo $$ >&9
+
 REPO_HOST=/home/ubuntu/Documents/willy/models/pretrained_weights/sam3_huggingface/exp/sam3-integration
 REPO_CTR=/root/willy/models/pretrained_weights/sam3_huggingface/exp/sam3-integration
 MIN_AVAIL_MB=${1:-9000}   # a 1008 build peaked at ~6.8 GB RSS; leave real margin
+MIN_DISK_GB=${2:-25}      # an fp16 engine is ~930 MB and a merged ONNX ~1.9 GB
+# Engines are kept by default in src/bench.py because rebuilding one costs
+# minutes. That was fine for 78 of them; the baseline N-sweep adds 45 more at
+# ~930 MB each on top of 85 GB of merged ONNX, and the disk hit 97%. So this
+# loop hands bench.py --delete-engines: the numbers land in results.jsonl, and
+# any engine that is needed again can be rebuilt from the ONNX that stays.
+DELETE_ENGINES=${DELETE_ENGINES:-1}
 
 avail() { free -m | awk 'NR==2{print $7}'; }
 
@@ -60,6 +85,13 @@ print(r["tag"], r["onnx"], r["res"], r["bs"],
       int(r["int8"]), r["rect"] if r["rect"] is not None else -1, r["n_max"])')"
     LEFT=$(printf '%s\n' "$PLAN" | wc -l)
 
+    DISK_GB=$(df --output=avail -BG /home | tail -1 | tr -dc '0-9')
+    if [ "${DISK_GB:-0}" -lt "$MIN_DISK_GB" ]; then
+        echo "[drive] only ${DISK_GB} GB of disk left (< ${MIN_DISK_GB}); stopping"
+        echo "[drive] rather than letting a build fail halfway on ENOSPC."
+        break
+    fi
+
     [ "$(avail)" -lt "$MIN_AVAIL_MB" ] && restart_container
     if [ "$(avail)" -lt "$MIN_AVAIL_MB" ]; then
         echo "[drive] STILL only $(avail) MB after a restart -- the driver leak is"
@@ -70,6 +102,7 @@ print(r["tag"], r["onnx"], r["res"], r["bs"],
 
     echo "[drive] $(date +%H:%M) ${TAG} res=${RES} bs=${BS} N=${NMAX} (${LEFT} left, avail $(avail) MB)"
     CMD="python3 -m src.bench --onnx ${ONNX} --res ${RES} --bs ${BS} --tag ${TAG} --n-max ${NMAX} --out results.jsonl"
+    [ "$DELETE_ENGINES" = "1" ] && CMD="$CMD --delete-engines"
     [ "$INT8" = "1" ] && CMD="$CMD --int8"
     [ "$RECT" != "-1" ] && CMD="$CMD --rect-rows ${RECT}"
     in_ctr "$CMD" 2>&1 | grep -E '^(    |=== )' | tail -4
