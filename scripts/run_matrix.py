@@ -189,7 +189,10 @@ def done_rows():
             r = json.loads(line)
         except Exception:
             continue
-        if r.get("ok") or r.get("error"):
+        if "ok" in r or "error" in r:   # attempted, not "succeeded" -- a
+                                       # build-ok-but-bench-failed row has
+                                       # ok=False and no "error" key, and
+                                       # without this it gets rebuilt forever
             seen.add((r["tag"], r["res"], r["bs"]))
     return seen
 

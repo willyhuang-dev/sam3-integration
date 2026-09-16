@@ -21,6 +21,15 @@
 #   bash scripts/drive.sh [min_avail_mb]
 
 set -u
+# `docker exec` for a build runs SYNCHRONOUSLY from this loop; sending this
+# script SIGTERM/SIGKILL stops the loop but does NOT stop the trtexec it
+# already launched (that child is not in this process's job control, and
+# with --pid=host it is a real host process that outlives the kill). Learned
+# this by orphaning one: it ran on for minutes after the "stop" and pushed
+# available RAM from 5.8 GB to 221 MB. Killing trtexec explicitly on any exit
+# path is not optional.
+trap 'pkill -9 -x trtexec 2>/dev/null' EXIT INT TERM
+
 REPO_HOST=/home/ubuntu/Documents/willy/models/pretrained_weights/sam3_huggingface/exp/sam3-integration
 REPO_CTR=/root/willy/models/pretrained_weights/sam3_huggingface/exp/sam3-integration
 MIN_AVAIL_MB=${1:-9000}   # a 1008 build peaked at ~6.8 GB RSS; leave real margin

@@ -90,10 +90,15 @@ def main():
     # per-image latency makes the batching question answerable
     L.append("### 每張影像攤提延遲（ms / image）")
     L.append("")
+    # Failed rows are carried through, not filtered out: dropping them would
+    # render an OOM cell as "—", which reads as "not measured" rather than
+    # "measured, and it does not fit".
     per = {}
     for (tag, res, bs), r in rows.items():
-        if tag == "int8_rect" and r.get("ok"):
-            per[(tag, res, bs)] = dict(r, per_img=r["latency_ms"] / bs)
+        if tag != "int8_rect":
+            continue
+        per[(tag, res, bs)] = dict(r, per_img=r["latency_ms"] / bs) \
+            if r.get("ok") else r
     L.append(matrix(per, "int8_rect", "per_img", "{:.1f}"))
     L.append("")
 
@@ -168,12 +173,22 @@ def main():
     if not bad:
         L.append("（無）")
     else:
-        L.append("| tag | res | bs | pred_masks 大小 | 情況 |")
-        L.append("|---|---|---|---|---|")
+        L.append("| tag | res | bs | pred_masks 大小 | 情況 | engine 建起來了嗎 | "
+                 "實際錯誤 |")
+        L.append("|---|---|---|---|---|---|---|")
         for r in sorted(bad, key=lambda r: (r["tag"], r["res"], r["bs"])):
-            why = "build 失敗" if not r.get("build_ok") else "執行失敗（多半是 OOM）"
+            why = "build 失敗" if not r.get("build_ok") else "執行時失敗"
+            built = "—" if not r.get("build_ok") else f"是（{r.get('engine_mib')} MiB）"
+            # Quote the engine's own words rather than labelling it "OOM".
+            # A build that is OOM-KILLED leaves no error line at all -- its log
+            # just stops -- so "no error line" is itself the diagnosis, and it
+            # means the harness died, not the model.
+            tail = r.get("stderr_tail") or ""
+            hit = [ln.strip() for ln in tail.splitlines()
+                   if "out of memory" in ln.lower() or "cuda failure" in ln.lower()]
+            err = hit[-1][:110] if hit else "（log 無錯誤行 → 行程被 OOM killer 殺掉）"
             L.append(f"| {r['tag']} | {r['res']} | {r['bs']} | "
-                     f"{r['mask_bytes'] / 2**30:.2f} GiB | {why} |")
+                     f"{r['mask_bytes'] / 2**30:.2f} GiB | {why} | {built} | `{err}` |")
     L.append("")
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
