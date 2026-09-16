@@ -66,6 +66,11 @@ def parse_args(argv=None):
     p.add_argument("--device", default="cpu",
                    help="cpu keeps the 16 GB card free; the traced graph is "
                         "identical either way")
+    p.add_argument("--head-only", action="store_true",
+                   help="export only head.onnx. The VE graph does NOT depend on "
+                        "--n-max -- concept slots live entirely in the head -- so "
+                        "sweeping N reuses one VE (and one INT8 calibration) and "
+                        "re-exports only the 92 MB head.")
     return p.parse_args(argv)
 
 
@@ -109,17 +114,21 @@ def main(argv=None):
         print(f"    {n:16s} {tuple(t.shape)}", flush=True)
 
     dyn_b = {n: {0: "batch"} for n in VE_OUTPUTS}
-    t0 = time.time()
-    ve_path = os.path.join(args.out_dir, "ve.onnx")
-    print("[onnx] VE ...", flush=True)
-    with torch.no_grad():
-        torch.onnx.export(
-            ve, (img,), ve_path,
-            input_names=VE_INPUTS, output_names=VE_OUTPUTS,
-            opset_version=args.opset, do_constant_folding=True, dynamo=False,
-            dynamic_axes={"images": {0: "batch"}, **dyn_b})
-    print(f"    {ve_path} ({os.path.getsize(ve_path) / 2**20:.0f} MiB) "
-          f"{time.time() - t0:.0f}s", flush=True)
+    if args.head_only:
+        print("[onnx] VE skipped (--head-only); it does not depend on n_max",
+              flush=True)
+    else:
+        t0 = time.time()
+        ve_path = os.path.join(args.out_dir, "ve.onnx")
+        print("[onnx] VE ...", flush=True)
+        with torch.no_grad():
+            torch.onnx.export(
+                ve, (img,), ve_path,
+                input_names=VE_INPUTS, output_names=VE_OUTPUTS,
+                opset_version=args.opset, do_constant_folding=True, dynamo=False,
+                dynamic_axes={"images": {0: "batch"}, **dyn_b})
+        print(f"    {ve_path} ({os.path.getsize(ve_path) / 2**20:.0f} MiB) "
+              f"{time.time() - t0:.0f}s", flush=True)
 
     del out
     gc.collect()

@@ -97,6 +97,38 @@ def main():
     L.append(matrix(per, "int8_rect", "per_img", "{:.1f}"))
     L.append("")
 
+    L.append("## 概念數（num_classes）掃描，bs=1")
+    L.append("")
+    L.append("N 是匯出期固定的插槽數，每個 N 是一顆獨立 engine。**VE 完全不隨 N 改變**"
+             "（vision encoder 看不到文字），所以這條曲線量到的全部是 head 的成本。")
+    L.append("")
+    for res in (644, 1008):
+        got = [(n, rows.get((f"int8_rect_n{n}" if n != 10 else "int8_rect", res, 1)))
+               for n in range(1, 11)]
+        got = [(n, r) for n, r in got if r is not None]
+        if not got:
+            continue
+        L.append(f"### res = {res}")
+        L.append("")
+        L.append("| N | 延遲 (ms) | vs N=1 | 每概念邊際 (ms) | VRAM (MiB) | "
+                 "pred_masks | engine (MiB) |")
+        L.append("|---|---|---|---|---|---|---|")
+        base = None
+        prev = None
+        for n, r in got:
+            lat = r.get("latency_ms") if r.get("ok") else None
+            if n == 1 and lat:
+                base = lat
+            ratio = f"{lat / base:.2f}×" if (lat and base) else "—"
+            marg = f"{lat - prev:+.1f}" if (lat and prev) else "—"
+            L.append(f"| {n} | {cell(r, 'latency_ms', '{:.1f}')} | {ratio} | {marg} | "
+                     f"{cell(r, 'vram_peak_proc_mib', '{:.0f}')} | "
+                     f"{r['mask_bytes'] / 2**20:.0f} MiB | "
+                     f"{cell(r, 'engine_mib', '{:.0f}')} |")
+            if lat:
+                prev = lat
+        L.append("")
+
     L.append("## 歸因：加速從哪裡來（bs=1）")
     L.append("")
     L.append("| res | fp16 dense | fp16 + 策略C | INT8 dense | **INT8 + 策略C** "

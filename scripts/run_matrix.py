@@ -41,6 +41,9 @@ sys.path.insert(0, HERE)
 
 RES = [644, 728, 840, 924, 1008]
 BATCHES = [1, 2, 4, 6, 8]
+N_SWEEP = list(range(1, 11))   # concept slots baked into the engine
+N_SWEEP_RES = (644, 1008)      # both ends of the resolution range
+N_DEFAULT = 10
 CALIB_RES = 644          # the only resolution whose calibration fits in 28 GB
 OUT = os.path.join(HERE, "out")
 LOGS = os.path.join(HERE, "logs")
@@ -141,6 +144,42 @@ def stage_merge(res_list):
                 print(f"[merge] {int8} exists, skip", flush=True)
 
 
+def d_nhead(res, n):
+    return os.path.join(OUT, f"res={res}_n{n}")
+
+
+def stage_nsweep_prep(res_list):
+    """Heads for N = 1..10, reusing one VE and one calibration per resolution.
+
+    The concept slots live ENTIRELY in the head: the vision encoder never sees
+    text, so its graph -- and therefore the INT8 scales calibrated on it -- are
+    identical for every N. That is why this sweep costs ten 92 MB head exports
+    and ten merges rather than ten full exports and ten calibrations.
+
+    It also means the sweep isolates cleanly: anything that changes with N is
+    the head, because nothing else changed.
+    """
+    for res in [r for r in N_SWEEP_RES if r in res_list]:
+        ve_q = os.path.join(OUT, f"ve_int8_rect_{res}.onnx") if res != CALIB_RES \
+            else os.path.join(OUT, f"ve_{CALIB_RES}_rect.mp_neck.onnx")
+        if not os.path.exists(ve_q):
+            print(f"[nsweep] quantized VE for {res} not ready yet, skip", flush=True)
+            continue
+        for n in N_SWEEP:
+            if n == N_DEFAULT:
+                continue          # already built by the main matrix
+            d = d_nhead(res, n)
+            if not os.path.exists(os.path.join(d, "head.onnx")):
+                sh([sys.executable, "-m", "src.export_onnx", "--size", str(res),
+                    "--n-max", str(n), "--out-dir", d, "--head-only"],
+                   log=f"export_n{n}_{res}.log")
+            merged = os.path.join(OUT, f"int8_rect_{res}_n{n}.onnx")
+            if not os.path.exists(merged):
+                sh([sys.executable, "-m", "src.merge", ve_q,
+                    os.path.join(d, "head.onnx"), merged],
+                   log=f"merge_n{n}_{res}.log")
+
+
 def done_rows():
     if not os.path.exists(RESULTS):
         return set()
@@ -165,32 +204,47 @@ def stage_bench(res_list):
     # The deliverable -- the 5x5 int8+rect sweep that was actually asked for --
     # therefore runs to completion FIRST; the attribution corners are the part
     # that gets cut short if anything gets cut short.
-    plan = [("int8_rect", f"int8_rect_{res}.onnx", res, BATCHES, True, rect_of[res])
-            for res in res_list]
+    plan = [("int8_rect", f"int8_rect_{res}.onnx", res, BATCHES, True,
+             rect_of[res], N_DEFAULT) for res in res_list]
+    # Second ask: what does one more concept slot cost? N is fixed at export, so
+    # each point is its own engine. bs=1 keeps it one variable at a time.
+    for res in [r for r in N_SWEEP_RES if r in res_list]:
+        for n in N_SWEEP:
+            if n == N_DEFAULT:
+                continue          # the (res, bs=1) cell above IS N=10
+            plan.append((f"int8_rect_n{n}", f"int8_rect_{res}_n{n}.onnx", res,
+                         [1], True, rect_of[res], n))
     # Reference for the headline speedup: stock precision, stock token count.
-    plan += [("fp16_dense", f"fp16_dense_{res}.onnx", res, [1], False, None)
-             for res in res_list]
+    plan += [("fp16_dense", f"fp16_dense_{res}.onnx", res, [1], False, None,
+              N_DEFAULT) for res in res_list]
     # The two single-ingredient corners complete the 2x2. Only at the ends of
     # the resolution range: 644 is the structurally special one (its windowed
     # attention saves nothing, see README) and 1008 is the intended operating
     # point, so the pair brackets the behaviour without 10 more builds.
-    for res in [r for r in (644, 1008) if r in res_list]:
-        plan.append(("fp16_rect", f"fp16_rect_{res}.onnx", res, [1], False, rect_of[res]))
-        plan.append(("int8_dense", f"int8_dense_{res}.onnx", res, [1], True, None))
+    for res in [r for r in CORNER_RES if r in res_list]:
+        plan.append(("fp16_rect", f"fp16_rect_{res}.onnx", res, [1], False,
+                     rect_of[res], N_DEFAULT))
+        plan.append(("int8_dense", f"int8_dense_{res}.onnx", res, [1], True,
+                     None, N_DEFAULT))
 
-    for tag, onnx_name, res, batches, int8, rect in plan:
+    for tag, onnx_name, res, batches, int8, rect, n_max in plan:
+        onnx_path = os.path.join(OUT, onnx_name)
         todo = [b for b in batches if (tag, res, b) not in seen]
         if not todo:
             print(f"[bench] {tag} r{res}: all done, skip", flush=True)
             continue
+        if not os.path.exists(onnx_path):
+            print(f"[bench] {onnx_path} missing, skip", flush=True)
+            continue
         cmd = [sys.executable, "-m", "src.bench",
-               "--onnx", os.path.join(OUT, onnx_name), "--res", str(res),
-               "--bs", *[str(b) for b in todo], "--tag", tag, "--out", RESULTS]
+               "--onnx", onnx_path, "--res", str(res),
+               "--bs", *[str(b) for b in todo], "--tag", tag,
+               "--n-max", str(n_max), "--out", RESULTS]
         if int8:
             cmd.append("--int8")
         if rect is not None:
             cmd += ["--rect-rows", str(rect)]
-        print(f"[bench] {tag} r{res} bs={todo}", flush=True)
+        print(f"[bench] {tag} r{res} bs={todo} n_max={n_max}", flush=True)
         subprocess.run(cmd, cwd=HERE)
 
 
@@ -198,7 +252,7 @@ def main():
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--stage", default="all",
-                   choices=["all", "export", "quantize", "merge", "bench"])
+                   choices=["all", "export", "quantize", "merge", "nsweep", "bench"])
     p.add_argument("--res", type=int, nargs="+", default=RES)
     args = p.parse_args()
     os.makedirs(LOGS, exist_ok=True)
@@ -211,6 +265,8 @@ def main():
         stage_quantize()
     if args.stage in ("all", "merge"):
         stage_merge(order)
+    if args.stage in ("all", "nsweep"):
+        stage_nsweep_prep(order)
     if args.stage in ("all", "bench"):
         stage_bench(order)
     print("=== run_matrix done ===", flush=True)
