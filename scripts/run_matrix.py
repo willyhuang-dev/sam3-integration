@@ -42,7 +42,7 @@ sys.path.insert(0, HERE)
 RES = [644, 728, 840, 924, 1008]
 BATCHES = [1, 2, 4, 6, 8]
 N_SWEEP = list(range(1, 11))   # concept slots baked into the engine
-N_SWEEP_RES = (644, 1008)      # both ends of the resolution range
+N_SWEEP_RES = tuple(RES)       # every resolution, not just the two ends
 N_DEFAULT = 10
 CALIB_RES = 644          # the only resolution whose calibration fits in 28 GB
 OUT = os.path.join(HERE, "out")
@@ -211,6 +211,10 @@ def stage_bench(res_list, print_plan=False):
              rect_of[res], N_DEFAULT) for res in res_list]
     # Second ask: what does one more concept slot cost? N is fixed at export, so
     # each point is its own engine. bs=1 keeps it one variable at a time.
+    # Run at EVERY resolution: the two-end sample showed the per-concept cost
+    # grows faster than the shared VE cost (4.58 -> 12.54 ms while the VE only
+    # went 19.5 -> 37.1), so the middle resolutions are where that trade sits
+    # and they are not interpolatable from the ends.
     for res in [r for r in N_SWEEP_RES if r in res_list]:
         for n in N_SWEEP:
             if n == N_DEFAULT:

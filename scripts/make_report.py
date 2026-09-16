@@ -107,7 +107,8 @@ def main():
     L.append("N 是匯出期固定的插槽數，每個 N 是一顆獨立 engine。**VE 完全不隨 N 改變**"
              "（vision encoder 看不到文字），所以這條曲線量到的全部是 head 的成本。")
     L.append("")
-    for res in (644, 1008):
+    fits = []
+    for res in RES:
         got = [(n, rows.get((f"int8_rect_n{n}" if n != 10 else "int8_rect", res, 1)))
                for n in range(1, 11)]
         got = [(n, r) for n, r in got if r is not None]
@@ -132,6 +133,32 @@ def main():
                      f"{cell(r, 'engine_mib', '{:.0f}')} |")
             if lat:
                 prev = lat
+        L.append("")
+        # Two points are enough for the line because the sweep IS linear (the
+        # per-concept increments have no trend); the intercept is then the VE,
+        # which is bit-identical across N, and the slope is the head.
+        ok = [(n, r["latency_ms"]) for n, r in got if r.get("ok")]
+        if len(ok) >= 2:
+            (n1, l1), (n2, l2) = ok[0], ok[-1]
+            slope = (l2 - l1) / (n2 - n1)
+            icpt = l1 - slope * n1
+            fits.append((res, icpt, slope))
+            L.append(f"擬合：**延遲 ≈ {icpt:.1f} + {slope:.2f} × N** ms"
+                     f"（VE 固定 {icpt:.1f} ms，每概念 {slope:.2f} ms）")
+            L.append("")
+
+    if len(fits) >= 2:
+        L.append("### VE 與 head 的成本如何隨解析度變化")
+        L.append("")
+        L.append("這個拆解不是迴歸推測：VE 對每個 N **逐位元相同**（同一顆量化好的 VE、"
+                 "同一次校準，只換 head），所以截距就是 VE、斜率就是 head。")
+        L.append("")
+        L.append("| res | VE 固定 (ms) | 每概念 (ms) | N=10 時 head 佔比 | 保留 token |")
+        L.append("|---|---|---|---|---|")
+        for res, icpt, slope in fits:
+            share = 10 * slope / (icpt + 10 * slope)
+            kept = (res // 14) * -(-res * 9 // 16 // 14)
+            L.append(f"| {res} | {icpt:.1f} | {slope:.2f} | {share:.0%} | {kept} |")
         L.append("")
 
     L.append("## 歸因：加速從哪裡來（bs=1）")
