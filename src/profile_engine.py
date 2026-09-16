@@ -68,18 +68,16 @@ def main(argv=None):
         print(out[-2000:])
         raise SystemExit(f"trtexec failed rc={r.returncode}")
 
-    # Layer rows look like:  name  Runtime, %  Invocations  Average time (ms)
+    # trtexec prints:  Time(ms)  Avg.(ms)  Median(ms)  Time(%)  Layer
+    # -- the NAME IS LAST, not first. Getting that backwards is what made the
+    # first version parse zero rows.
+    row_re = re.compile(
+        r"\[I\]\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+(\S.*?)\s*$")
     rows = []
     for line in out.splitlines():
-        m = re.match(r"\[.*\]\s+(.*?)\s+([0-9.]+)\s+([0-9]+)\s+([0-9.]+)\s*$", line)
-        if m and not m.group(1).startswith("Total"):
-            rows.append((m.group(1).strip(), float(m.group(4))))
-    if not rows:
-        # fall back to the simpler two-column layout some TRT versions print
-        for line in out.splitlines():
-            m = re.match(r"\s*(\S.*?)\s{2,}([0-9.]+)\s*$", line)
-            if m:
-                rows.append((m.group(1).strip(), float(m.group(2))))
+        m = row_re.search(line)
+        if m:
+            rows.append((m.group(5), float(m.group(3))))   # (name, median ms)
     if not rows:
         raise SystemExit("could not parse any layer rows from the profile; "
                          "the trtexec output format has changed -- inspect it "
@@ -101,8 +99,15 @@ def main(argv=None):
             print(f"{b:18s} {agg[b]:9.2f} {100 * agg[b] / total:6.1f}% {cnt[b]:7d}")
     ve = sum(v for k, v in agg.items() if k.startswith("VE"))
     hd = sum(v for k, v in agg.items() if not k.startswith("VE") and k != "unattributed")
-    print(f"\n  VE   {ve:7.2f} ms ({100 * ve / total:.1f}%)")
-    print(f"  head {hd:7.2f} ms ({100 * hd / total:.1f}%)")
+    un = agg.get("unattributed", 0.0)
+    print(f"\n  VE           {ve:7.2f} ms ({100 * ve / total:.1f}%)")
+    print(f"  head         {hd:7.2f} ms ({100 * hd / total:.1f}%)")
+    print(f"  unattributed {un:7.2f} ms ({100 * un / total:.1f}%)")
+    if un > 0.25 * total:
+        print("\n  ⚠️ over a quarter of the time is in Myelin-fused nodes named\n"
+              "     __myl_* with no module path, so this split cannot be trusted\n"
+              "     as a VE/head attribution. The N-sweep intercept/slope is the\n"
+              "     reliable source for that; use this only for the named layers.")
 
     if args.out:
         with open(args.out, "w") as fh:

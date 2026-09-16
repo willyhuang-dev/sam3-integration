@@ -44,6 +44,7 @@ VE_INPUTS = ["images"]
 VE_OUTPUTS = ["fpn_feat_0", "fpn_feat_1", "fpn_feat_2", "fpn_pos_2"]
 HEAD_INPUTS = VE_OUTPUTS + ["text_features", "text_mask"]
 HEAD_OUTPUTS = ["pred_boxes", "pred_logits", "presence_logits", "pred_masks"]
+HEAD_OUTPUTS_NOMASK = HEAD_OUTPUTS[:3]
 
 
 def parse_args(argv=None):
@@ -66,6 +67,12 @@ def parse_args(argv=None):
     p.add_argument("--device", default="cpu",
                    help="cpu keeps the 16 GB card free; the traced graph is "
                         "identical either way")
+    p.add_argument("--no-masks", action="store_true",
+                   help="drop pred_masks. TensorRT then dead-code-eliminates the "
+                        "whole mask decoder, so the difference against the "
+                        "with-masks engine IS the mask decoder's cost -- and it "
+                        "is also the deployment option for detection-only use, "
+                        "where pred_masks is what makes large batches OOM.")
     p.add_argument("--head-only", action="store_true",
                    help="export only head.onnx. The VE graph does NOT depend on "
                         "--n-max -- concept slots live entirely in the head -- so "
@@ -94,7 +101,8 @@ def main(argv=None):
     print("[load] model ...", flush=True)
     model = load_model(args.model_id, args.size).to(args.device)
     ve = IntegratedVE(model, rect_rows=rect).eval()
-    head = MultiConceptHead(model, n_max=args.n_max).eval()
+    head = MultiConceptHead(model, n_max=args.n_max,
+                            return_masks=not args.no_masks).eval()
 
     img = torch.zeros(1, 3, args.size, args.size, device=args.device)
     # Real-ish values rather than zeros: the traced graph cannot depend on them,
@@ -110,7 +118,8 @@ def main(argv=None):
         out = head(*f, tf, tm)
     for n, t in zip(VE_OUTPUTS, f):
         print(f"    {n:14s} {tuple(t.shape)}", flush=True)
-    for n, t in zip(HEAD_OUTPUTS, out):
+    head_outputs = HEAD_OUTPUTS_NOMASK if args.no_masks else HEAD_OUTPUTS
+    for n, t in zip(head_outputs, out):
         print(f"    {n:16s} {tuple(t.shape)}", flush=True)
 
     dyn_b = {n: {0: "batch"} for n in VE_OUTPUTS}
@@ -139,9 +148,9 @@ def main(argv=None):
     with torch.no_grad():
         torch.onnx.export(
             head, (*f, tf, tm), head_path,
-            input_names=HEAD_INPUTS, output_names=HEAD_OUTPUTS,
+            input_names=HEAD_INPUTS, output_names=head_outputs,
             opset_version=args.opset, do_constant_folding=True, dynamo=False,
-            dynamic_axes={**dyn_b, **{n: {0: "batch"} for n in HEAD_OUTPUTS}})
+            dynamic_axes={**dyn_b, **{n: {0: "batch"} for n in head_outputs}})
     print(f"    {head_path} ({os.path.getsize(head_path) / 2**20:.0f} MiB) "
           f"{time.time() - t0:.0f}s", flush=True)
 
@@ -149,7 +158,8 @@ def main(argv=None):
     with open(meta, "w") as fh:
         import json
         json.dump({"size": args.size, "grid": grid, "n_max": args.n_max,
-                   "rect_rows": rect, "mask": mask, "aspect": args.aspect,
+                   "rect_rows": rect, "mask": None if args.no_masks else mask,
+                   "masks": not args.no_masks, "aspect": args.aspect,
                    "opset": args.opset}, fh, indent=2)
     print(f"[done] {meta}", flush=True)
     return 0

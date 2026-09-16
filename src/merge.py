@@ -56,8 +56,30 @@ def main(argv=None):
     ve.ir_version = head.ir_version = max(ve.ir_version, head.ir_version)
 
     head = compose.add_prefix(head, prefix=PREFIX)
-    merged = compose.merge_models(
-        ve, head, io_map=[(n, PREFIX + n) for n in IO])
+
+    # Connect only what the head actually consumes. A detection-only head
+    # (exported with --no-masks) does not take fpn_feat_0/1 at all: those two
+    # high-resolution FPN levels exist SOLELY for the mask decoder, which the
+    # exporter pruned along with the mask output. Mapping them anyway raises
+    # "Input h/fpn_feat_0 is not present in g2".
+    head_inputs = {i.name for i in head.graph.input}
+    io_map = [(n, PREFIX + n) for n in IO if PREFIX + n in head_inputs]
+    dropped = [n for n in IO if PREFIX + n not in head_inputs]
+    if dropped:
+        print(f"[merge] head does not consume {dropped} -- "
+              f"detection-only graph", flush=True)
+    merged = compose.merge_models(ve, head, io_map=io_map)
+
+    # An unconsumed VE output survives as a graph OUTPUT, and TensorRT will then
+    # dutifully keep computing it. Removing it is what actually lets the FPN
+    # levels the mask decoder needed disappear from the engine.
+    if dropped:
+        keep = [o for o in merged.graph.output if o.name not in dropped]
+        removed = [o.name for o in merged.graph.output if o.name in dropped]
+        del merged.graph.output[:]
+        merged.graph.output.extend(keep)
+        print(f"[merge] removed now-dangling outputs {removed} so TensorRT "
+              f"can eliminate them", flush=True)
 
     ins = [i.name for i in merged.graph.input]
     outs = [o.name for o in merged.graph.output]

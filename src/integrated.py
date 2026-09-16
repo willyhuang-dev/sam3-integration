@@ -141,10 +141,16 @@ class MultiConceptHead(nn.Module):
     garbage, and no test that only checks shapes would notice.
     """
 
-    def __init__(self, model, n_max):
+    def __init__(self, model, n_max, return_masks=True):
         super().__init__()
         self.model = model
         self.n_max = n_max
+        # Dropping pred_masks is not just an output change: the ONNX exporter
+        # prunes ops that no output depends on, so the whole mask decoder
+        # leaves the graph. That makes it the clean way to price the mask
+        # decoder -- the layer-name profile cannot, because TensorRT fuses
+        # ~78% of this engine into __myl_* nodes with no module path.
+        self.return_masks = return_masks
 
     def forward(self, fpn_feat_0, fpn_feat_1, fpn_feat_2, fpn_pos_2,
                 text_features, text_mask):
@@ -178,6 +184,8 @@ class MultiConceptHead(nn.Module):
         boxes = out.pred_boxes.reshape(-1, n, *out.pred_boxes.shape[1:])
         logits = out.pred_logits.reshape(-1, n, *out.pred_logits.shape[1:])
         presence = out.presence_logits.reshape(-1, n)
+        if not self.return_masks:
+            return boxes, logits, presence
         masks = out.pred_masks.reshape(-1, n, *out.pred_masks.shape[1:])
         return boxes, logits, presence, masks
 
@@ -190,10 +198,10 @@ class IntegratedSam3(nn.Module):
     that is what the INT8 calibration needs.
     """
 
-    def __init__(self, model, n_max, rect_rows=None):
+    def __init__(self, model, n_max, rect_rows=None, return_masks=True):
         super().__init__()
         self.ve = IntegratedVE(model, rect_rows=rect_rows)
-        self.head = MultiConceptHead(model, n_max)
+        self.head = MultiConceptHead(model, n_max, return_masks=return_masks)
 
     def forward(self, images, text_features, text_mask):
         f0, f1, f2, p2 = self.ve(images)
