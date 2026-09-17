@@ -58,6 +58,31 @@ def to_tensor(canvas):
     return np.ascontiguousarray(x.transpose(2, 0, 1)[None])
 
 
-def prepare(rgb, size, aspect_w=16, aspect_h=9):
-    canvas, content_h = letterbox(rgb, size, aspect_w, aspect_h)
+def stretch_letterbox(rgb, size, aspect_w=16, aspect_h=9):
+    """Resize the WHOLE frame into the content band -- no crop, aspect distorted.
+
+    For a 16:9 source this is identical to `letterbox` (the crop removes
+    nothing), so it changes nothing about the product. It exists for evaluating
+    on datasets that are not 16:9: the centre-crop throws away 12.9% of COCO's
+    boxes, and charging the model for objects it was never shown is not a
+    measurement of the model.
+
+    The inverse map is exact -- x spans the full original width and y the full
+    original height -- so ground truth needs no transform at all and the result
+    is a standard COCO evaluation.
+
+    Aspect distortion is close to free here: the ROI experiment measured
+    aspect-preserving letterbox vs stretched-to-square at -0.2% det50.
+    """
+    import cv2
+    content_h = int(round(size * aspect_h / aspect_w))
+    canvas = np.zeros((size, size, 3), dtype=np.uint8)
+    canvas[:content_h] = cv2.resize(rgb, (size, content_h),
+                                    interpolation=cv2.INTER_LINEAR)
+    return canvas, content_h
+
+
+def prepare(rgb, size, aspect_w=16, aspect_h=9, stretch=False):
+    canvas, content_h = (stretch_letterbox if stretch else letterbox)(
+        rgb, size, aspect_w, aspect_h)
     return to_tensor(canvas), content_h
