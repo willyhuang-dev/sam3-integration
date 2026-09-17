@@ -60,6 +60,12 @@ def parse_args(argv=None):
     p.add_argument("--aspect", default="16:9",
                    help="content aspect ratio the letterbox preserves, W:H "
                         "(default 16:9). Sets how many token rows survive.")
+    p.add_argument("--rect-rows", type=int, default=None,
+                   help="override the letterbox-derived row count. Sweeping this "
+                        "and fitting latency = a + b*rows is how the FIXED cost "
+                        "that strategy C cannot touch gets measured -- the "
+                        "intercept. Layer profiling cannot answer it here: "
+                        "TensorRT fuses 78% of the engine into unnamed nodes.")
     p.add_argument("--no-prune", action="store_true",
                    help="dense baseline: skip strategy C entirely. This is the "
                         "control every pruned number is compared against.")
@@ -93,7 +99,8 @@ def main(argv=None):
         raise SystemExit(f"--size must be a multiple of {PATCH}; {args.size} is not")
     aw, ah = (int(v) for v in args.aspect.split(":"))
     grid = args.size // PATCH
-    rect = None if args.no_prune else rect_rows_for(args.size, aw, ah)
+    rect = None if args.no_prune else (args.rect_rows or
+                                       rect_rows_for(args.size, aw, ah))
     mask = grid * MASK_UPSCALE
     os.makedirs(args.out_dir, exist_ok=True)
 

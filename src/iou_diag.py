@@ -237,10 +237,19 @@ def main(argv=None):
     print(f"[cfg] res={args.res} images={len(files)} concepts={args.concepts}",
           flush=True)
 
-    tags = sorted({t for pair in args.pairs for t in pair.split(":")})
+    # A side may carry its own resolution as "tag@res". Comparing across
+    # resolutions is legitimate HERE because the boxes are scored in canvas
+    # coordinates and every resolution letterboxes the same 16:9 content into
+    # the same 56.25% of the canvas -- so the normalised boxes mean the same
+    # thing at 588 and at 1008.
+    def split(side):
+        return tuple(side.split("@")) if "@" in side else (side, str(args.res))
+
+    tags = sorted({split(t) for pair in args.pairs for t in pair.split(":")})
     dets = {t: [] for t in tags}
     for t in tags:
-        path = os.path.join(args.engine_dir, f"{t}_r{args.res}_b1.engine")
+        tag, res = t
+        path = os.path.join(args.engine_dir, f"{tag}_r{res}_b1.engine")
         if not os.path.exists(path):
             print(f"[skip] {path} missing", flush=True)
             dets.pop(t)
@@ -255,9 +264,10 @@ def main(argv=None):
             dets[t].append(detect(eng, rgb, args.concepts, args.lib_dir,
                                   squash=args.squash))
             if (i + 1) % 50 == 0:
-                print(f"      {t} {i + 1}/{len(files)}", flush=True)
+                print(f"      {tag}@{res} {i + 1}/{len(files)}", flush=True)
         n = sum(len(d) for d in dets[t])
-        print(f"[run] {t:12s} {n} detections over {len(files)} images", flush=True)
+        print(f"[run] {tag+'@'+res:22s} {n} detections over {len(files)} images",
+              flush=True)
         del eng
 
     print(f"\n{'pair':28s} {'matched':>9s} {'IoU canvas':>11s} {'IoU frame':>10s} "
@@ -265,7 +275,7 @@ def main(argv=None):
     print("-" * 82, flush=True)
     rows = []
     for pair in args.pairs:
-        a, b = pair.split(":")
+        a, b = (split(x) for x in pair.split(":"))
         if a not in dets or b not in dets:
             continue
         LISTS = ("iou_canvas", "iou_frame", "score_mae",
@@ -281,6 +291,7 @@ def main(argv=None):
         mf = np.mean(agg["iou_frame"]) if agg["iou_frame"] else float("nan")
         ms = np.mean(agg["score_mae"]) if agg["score_mae"] else float("nan")
         n_test = sum(len(d) for d in dets[b])
+        pair = f"{a[0]}@{a[1]}:{b[0]}@{b[1]}"
         print(f"{pair:28s} {agg['matched']:4d}/{agg['n_ref']:<4d} {mc:11.4f} "
               f"{mf:10.4f} {ms:10.4f} {n_test:8d}", flush=True)
         rows.append((pair, mc, mf, ms, agg["matched"], agg["n_ref"], n_test))

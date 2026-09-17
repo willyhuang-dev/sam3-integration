@@ -33,6 +33,8 @@ from collections import defaultdict, deque
 
 import onnx
 
+MAX_CARRY = 16   # see _check_structure; a real mismatch produced 124
+
 
 def _check_structure(base_g, q_g, qdq):
     """Refuse a transplant that cannot land; return the base nodes + weights to carry.
@@ -70,6 +72,23 @@ def _check_structure(base_g, q_g, qdq):
             f"FAIL: {len(hard)} tensors the Q/DQ nodes quantize exist in NEITHER "
             f"graph as initializers, e.g. {hard[:3]} -- these are not the same "
             f"graph at two resolutions.")
+    # A handful of carried weights is normal: the quantizer duplicates a shared
+    # weight so each consumer can hold its own scale. MANY of them is not -- it
+    # means the exporter gave the two graphs different auto-generated names,
+    # which only happens when the graphs really differ.
+    #
+    # Measured: 644 -> 728/840/924/1008 carry 0. 644 -> 588 carries 124, because
+    # 588's rect_rows is exactly window_size so window_partition needs NO
+    # padding at all, while 644's 26 rows pad to 48. Different padding, different
+    # constant folding, different names. Node counts matched anyway, so the
+    # count check alone let that through and the result failed to parse.
+    if len(carry) > MAX_CARRY:
+        raise SystemExit(
+            f"FAIL: {len(carry)} weight initializers would have to be carried "
+            f"across (limit {MAX_CARRY}). That many means the exporter named "
+            f"these two graphs differently, i.e. they are NOT the same graph at "
+            f"two resolutions -- matching node counts is not enough evidence. "
+            f"Calibrate at the target resolution instead of transplanting.")
     if carry:
         print(f"[transplant] carrying {len(carry)} duplicated weight initializers "
               f"created by the quantizer (e.g. {carry[:2]})", flush=True)
